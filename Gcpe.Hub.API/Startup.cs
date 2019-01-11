@@ -1,15 +1,19 @@
 ﻿using AutoMapper;
-using Gcpe.Hub.API.Data;
+using Gcpe.Hub.Data.Entity;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Controllers;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.HealthChecks;
 using Newtonsoft.Json;
 using Swashbuckle.AspNetCore.Swagger;
+using Swashbuckle.AspNetCore.SwaggerGen;
 
 namespace Gcpe.Hub.API
 {
@@ -21,20 +25,17 @@ namespace Gcpe.Hub.API
             Environment = env;
         }
 
-        public IConfiguration Configuration { get; }
-        public IHostingEnvironment Environment { get; }
+        private IConfiguration Configuration { get; }
+        private IHostingEnvironment Environment { get; }
 
         // This method gets called by the runtime. Use this method to add services to the container.
         public void ConfigureServices(IServiceCollection services)
         {
             services.AddAutoMapper();
 
-            // services.AddTransient<Seeder>(); uncomment to seed the database
-            // services.AddScoped<IRepository, Repository>(); uncomment for use with the database
+            services.AddDbContext<HubDbContext>(options => options.UseSqlServer(Configuration["HubDbContext"])
+                .ConfigureWarnings(warnings => warnings.Throw(RelationalEventId.QueryClientEvaluationWarning)));
 
-            // dependency injection for interfacing with in memory data
-            services.AddSingleton<IDataContext, InMemoryDataContext>();
-            services.AddSingleton<IRepository, InMemoryRepository>();
 
             services.AddMvc()
                 .AddJsonOptions(opt => opt.SerializerSettings.ReferenceLoopHandling = ReferenceLoopHandling.Ignore)
@@ -66,25 +67,42 @@ namespace Gcpe.Hub.API
                 };
             });
 
-
-            services.AddSwaggerGen(c =>
+            services.AddAuthorization(options =>
             {
-                c.SwaggerDoc("v1", new Info
+                options.AddPolicy("Administrator", policy => policy.RequireClaim("user_roles", "[Administrators]"));
+            });
+
+
+
+            services.AddSwaggerGen(setupAction =>
+            {
+                setupAction.SwaggerDoc("v1", new Info
                 {
                     Version = "Alpha",
                     Title = "BC Gov Hub API service",
-                    Description = "The .net Core 2.1 API for the Hub"
+                    Description = "The .Net Core API for the Hub"
                 });
+                setupAction.OperationFilter<OperationIdCorrectionFilter>();
             });
 
             services.AddHealthChecks(checks =>
             {
-                // checks.AddSqlCheck("Gcpe.Hub", Configuration["HubDbContext"]);
-                // checks.AddUrlCheck("https://github.com");
+                checks.AddSqlCheck("Gcpe.Hub", Configuration["HubDbContext"]);
                 checks.AddCheck("Webserver is running", () => HealthCheckResult.Healthy("Ok"));
             });
 
             services.AddCors();
+        }
+
+        private class OperationIdCorrectionFilter : IOperationFilter
+        { // GetActivity() instead of ApiActivitiesByIdGet()
+            public void Apply(Operation operation, OperationFilterContext context)
+            {
+                if (context.ApiDescription.ActionDescriptor is ControllerActionDescriptor actionDescriptor)
+                {
+                    operation.OperationId = actionDescriptor.ActionName;
+                }
+            }
         }
 
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
@@ -100,8 +118,6 @@ namespace Gcpe.Hub.API
             }
 
             // app.UseHttpsRedirection();
-
-            
 
             // temporary CORS fix
             app.UseCors(opts => opts.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader());
